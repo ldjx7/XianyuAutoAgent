@@ -1,4 +1,4 @@
-FROM python:3.10-alpine AS builder
+FROM python:3.14-alpine AS builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 第二阶段：最终镜像
-FROM python:3.10-alpine
+FROM python:3.14-alpine
 
 # 添加元数据标签
 LABEL maintainer="coderxiu<coderxiu@qq.com>"
