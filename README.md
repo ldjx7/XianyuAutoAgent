@@ -49,7 +49,6 @@
 
 
 ## 🚴 快速开始
-小白请直接查看[保姆级教学文档](https://my.feishu.cn/wiki/JtkBwkI9GiokZikVdyNceEfZncE)
 也可以看项目内中文指导书：`docs/guide/USER_GUIDE_ZH.md`
 ### 环境要求
 - Python 3.8+
@@ -57,7 +56,7 @@
 ### 安装步骤
 ```bash
 1. 克隆仓库
-git clone https://github.com/shaxiu/XianyuAutoAgent.git
+git clone https://github.com/<your-account>/XianyuAutoAgent.git
 cd XianyuAutoAgent
 
 2. 安装依赖
@@ -166,56 +165,12 @@ ORDER_ROUTER_RETRIES=2
 
 ## 🤝 参与贡献
 
-欢迎通过 Issue 提交建议或 PR 贡献代码，请遵循 [贡献指南](https://contributing.md/)
+欢迎通过 Issue 提交建议或 PR 贡献代码。
 
+## 📄 License
 
+本项目采用仓库内 [LICENSE](./LICENSE) 许可协议。
 
-## 🛡 注意事项
+## 🛡 免责声明
 
-⚠️ 注意：**本项目仅供学习与交流，如有侵权联系作者删除。**
-
-鉴于项目的特殊性，开发团队可能在任何时间**停止更新**或**删除项目**。
-
-如需学习交流，请联系：[coderxiu@qq.com](https://mailto:coderxiu@qq.com/)
-
-## 📱 交流群
-欢迎加入项目交流群，交流技术、分享经验、互助学习。
-<div align="center">
-  <table>
-    <tr>
-      <td align="center"><strong>交流群16（已满200）</strong></td>
-      <td align="center"><strong>交流群17（推荐加入）</strong></td>
-    </tr>
-    <tr>
-      <td><img src="./images/wx_group16.png" width="300px" alt="交流群16"></td>
-      <td><img src="./images/wx_group17.png" width="300px" alt="交流群17"></td>
-    </tr>
-  </table>
-</div>
-
-## 💼 寻找机会
-
-### <a href="https://github.com/shaxiu">@Shaxiu</a>
-**🔍寻求方向**：**AI产品经理**  
-**📫 联系：** **email**:coderxiu@qq.com；**wx:** coderxiu
-
-### <a href="https://github.com/cv-cat">@CVcat</a>
-**🔍寻求方向**：**研发工程师**（python、java、逆向、爬虫）  
-**📫 联系：** **email:** 992822653@qq.com；**wx:** CVZC15751076989
-## ☕ 请喝咖啡
-您的☕和⭐将助力项目持续更新：
-
-<div align="center">
-  <img src="./images/wechat_pay.jpg" width="400px" alt="微信赞赏码"> 
-  <img src="./images/alipay.jpg" width="400px" alt="支付宝收款码">
-</div>
-
-
-## 📈 Star 趋势
-<a href="https://www.star-history.com/#shaxiu/XianyuAutoAgent&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=shaxiu/XianyuAutoAgent&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=shaxiu/XianyuAutoAgent&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=shaxiu/XianyuAutoAgent&type=Date" />
- </picture>
-</a>
+本项目仅用于学习与技术研究，请遵守所在地区法律法规及平台规则。
