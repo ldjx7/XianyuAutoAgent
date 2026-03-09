@@ -4,13 +4,31 @@ import os
 from openai import OpenAI
 from loguru import logger
 
+DEFAULT_MODEL_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_MODEL_NAME = "qwen-max"
+
+
+def _get_model_base_url() -> str:
+    return os.getenv("MODEL_BASE_URL", DEFAULT_MODEL_BASE_URL)
+
+
+def _get_model_name() -> str:
+    return os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
+
+
+def _build_tech_extra_body() -> Dict:
+    base_url = _get_model_base_url().lower()
+    if "openrouter.ai" in base_url:
+        return {"plugins": [{"id": "web"}]}
+    return {"enable_search": True}
+
 
 class XianyuReplyBot:
     def __init__(self):
         # 初始化OpenAI客户端
         self.client = OpenAI(
             api_key=os.getenv("API_KEY"),
-            base_url=os.getenv("MODEL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            base_url=_get_model_base_url(),
         )
         self._init_system_prompts()
         self._init_agents()
@@ -222,7 +240,7 @@ class BaseAgent:
     def _call_llm(self, messages: List[Dict], temperature: float = 0.4) -> str:
         """调用大模型"""
         response = self.client.chat.completions.create(
-            model=os.getenv("MODEL_NAME", "qwen-max"),
+            model=_get_model_name(),
             messages=messages,
             temperature=temperature,
             max_tokens=500,
@@ -241,7 +259,7 @@ class PriceAgent(BaseAgent):
         messages[0]['content'] += f"\n▲当前议价轮次：{bargain_count}"
 
         response = self.client.chat.completions.create(
-            model=os.getenv("MODEL_NAME", "qwen-max"),
+            model=_get_model_name(),
             messages=messages,
             temperature=dynamic_temp,
             max_tokens=500,
@@ -261,15 +279,17 @@ class TechAgent(BaseAgent):
         messages = self._build_messages(user_msg, item_desc, context)
         # messages[0]['content'] += "\n▲知识库：\n" + self._fetch_tech_specs()
 
+        request_kwargs = {
+            "model": _get_model_name(),
+            "messages": messages,
+            "temperature": 0.4,
+            "max_tokens": 500,
+            "top_p": 0.8,
+            "extra_body": _build_tech_extra_body(),
+        }
+
         response = self.client.chat.completions.create(
-            model=os.getenv("MODEL_NAME", "qwen-max"),
-            messages=messages,
-            temperature=0.4,
-            max_tokens=500,
-            top_p=0.8,
-            extra_body={
-                "enable_search": True,
-            }
+            **request_kwargs,
         )
 
         return self.safety_filter(response.choices[0].message.content)
