@@ -119,6 +119,12 @@ ORDER_ITEM_WEBHOOK_ROUTES={}
 ORDER_GROUP_WEBHOOK_ROUTES={}
 ORDER_ROUTER_TIMEOUT_MS=3000
 ORDER_ROUTER_RETRIES=2
+
+# 异步任务轮询（订单系统返回 track_async_task 时启用）
+ASYNC_TASK_POLL_ENABLED=true
+ASYNC_TASK_POLL_INTERVAL_SECONDS=5
+ASYNC_TASK_POLL_TIMEOUT_MS=3000
+ASYNC_TASK_POLL_BATCH_SIZE=20
 ```
 
 ### 按商品路由到不同订单业务服务
@@ -148,6 +154,41 @@ ORDER_ROUTER_RETRIES=2
 ```
 
 优先级：**单商品路由 (`ORDER_ITEM_WEBHOOK_ROUTES`) 高于分组路由 (`ORDER_GROUP_WEBHOOK_ROUTES`)**。
+
+### 异步订单任务（登录链接 / 轮询结果）
+如果你的订单系统在下单后会先返回登录链接，再异步完成后续处理，可以让订单 webhook 一次性返回两个动作：
+
+```json
+{
+  "actions": [
+    {
+      "action_type": "send_text",
+      "payload": {
+        "chat_id": "chat123",
+        "to_user_id": "user123",
+        "text": "请先点击链接完成登录：https://example.com/login/abc"
+      }
+    },
+    {
+      "action_type": "track_async_task",
+      "payload": {
+        "task_id": "task_abc",
+        "chat_id": "chat123",
+        "to_user_id": "user123",
+        "item_id": "itemA",
+        "status": "await_login",
+        "status_url": "https://biz-a.example.com/tasks/task_abc",
+        "poll_interval_seconds": 5
+      }
+    }
+  ]
+}
+```
+
+- `track_async_task` 只会对返回了该动作的订单生效，不会影响其他商品。
+- Agent 会把任务写入本地 SQLite，并在后台轮询 `status_url`。
+- 当轮询结果里的 `status` 变化时，若响应携带 `message` 或 `actions`，Agent 会只通知一次。
+- 终态建议使用：`passed`、`failed`、`timeout`。
 
 ### 事件/动作契约文档
 - 事件 schema 与样例：`docs/events.md`

@@ -15,9 +15,11 @@ class ActionExecutor:
         self,
         send_msg_func: Optional[Callable[..., Any]],
         set_manual_mode_func: Optional[Callable[[str, bool], None]],
+        track_async_task_func: Optional[Callable[[Dict[str, Any]], bool]] = None,
     ):
         self.send_msg_func = send_msg_func
         self.set_manual_mode_func = set_manual_mode_func
+        self.track_async_task_func = track_async_task_func
 
     async def execute(self, actions: Iterable[Action], context: Optional[Dict[str, Any]] = None) -> None:
         runtime = context or {}
@@ -30,6 +32,9 @@ class ActionExecutor:
             return
         if action.action_type == "set_manual_mode":
             self._handle_set_manual_mode(action.payload)
+            return
+        if action.action_type == "track_async_task":
+            self._handle_track_async_task(action.payload)
             return
         logger.warning(f"unknown action_type={action.action_type}, ignored")
 
@@ -61,3 +66,18 @@ class ActionExecutor:
             return
         self.set_manual_mode_func(chat_id, bool(enabled))
 
+    def _handle_track_async_task(self, payload: Dict[str, Any]) -> None:
+        if self.track_async_task_func is None:
+            logger.warning("track_async_task_func is not configured, skip track_async_task")
+            return
+        if not isinstance(payload, dict):
+            logger.warning(f"invalid track_async_task payload={payload}")
+            return
+        task_id = payload.get("task_id")
+        chat_id = payload.get("chat_id")
+        to_user_id = payload.get("to_user_id")
+        status_url = payload.get("status_url")
+        if not all(isinstance(v, str) and v for v in [task_id, chat_id, to_user_id, status_url]):
+            logger.warning(f"invalid track_async_task payload={payload}")
+            return
+        self.track_async_task_func(payload)

@@ -14,6 +14,8 @@ from utils.xianyu_utils import generate_mid, generate_uuid, trans_cookies, gener
 from XianyuAgent import XianyuReplyBot
 from context_manager import ChatContextManager
 from core.action_executor import ActionExecutor
+from core.async_task_poller import AsyncTaskPoller
+from core.async_task_store import AsyncTaskStore
 from core.event_dedup import EventDedupStore
 from core.event_parser import parse_events
 from core.handlers.base import EventHandler
@@ -75,10 +77,16 @@ class XianyuLive:
         
         # 模拟人工输入配置
         self.simulate_human_typing = os.getenv("SIMULATE_HUMAN_TYPING", "False").lower() == "true"
+        self.async_task_poll_enabled = os.getenv("ASYNC_TASK_POLL_ENABLED", "true").lower() == "true"
+        self.async_task_poll_interval = int(os.getenv("ASYNC_TASK_POLL_INTERVAL_SECONDS", "5"))
+        self.async_task_poll_task = None
+        self.async_task_store = AsyncTaskStore(db_path=self.context_manager.get_db_path())
         self.action_executor = ActionExecutor(
             send_msg_func=self.send_msg,
             set_manual_mode_func=self.set_manual_mode,
+            track_async_task_func=self.async_task_store.upsert_task,
         )
+        self.async_task_poller = AsyncTaskPoller(self.async_task_store)
         self.reply_bot = None
         self.event_dedup_store = EventDedupStore(
             db_path=self.context_manager.get_db_path(),
@@ -336,6 +344,17 @@ class XianyuLive:
             return "manual"
         self.exit_manual_mode(chat_id)
         return "auto"
+
+    async def async_task_poll_loop(self):
+        while True:
+            try:
+                loop = asyncio.get_running_loop()
+                actions = await loop.run_in_executor(None, self.async_task_poller.poll_due_tasks)
+                if actions:
+                    await self.action_executor.execute(actions, context={"websocket": self.ws})
+            except Exception as exc:
+                logger.error(f"异步任务轮询失败: {exc}")
+            await asyncio.sleep(max(self.async_task_poll_interval, 1))
 
     def _build_event_handlers(self):
         handlers = [
@@ -658,6 +677,9 @@ class XianyuLive:
                     
                     # 启动token刷新任务
                     self.token_refresh_task = asyncio.create_task(self.token_refresh_loop())
+
+                    if self.async_task_poll_enabled:
+                        self.async_task_poll_task = asyncio.create_task(self.async_task_poll_loop())
                     
                     async for message in websocket:
                         try:
@@ -717,6 +739,14 @@ class XianyuLive:
                         await self.token_refresh_task
                     except asyncio.CancelledError:
                         pass
+
+                if self.async_task_poll_task:
+                    self.async_task_poll_task.cancel()
+                    try:
+                        await self.async_task_poll_task
+                    except asyncio.CancelledError:
+                        pass
+                    self.async_task_poll_task = None
                 
                 # 如果是主动重启，立即重连；否则等待5秒
                 if self.connection_restart_flag:
