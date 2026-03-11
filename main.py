@@ -6,7 +6,7 @@ import os
 import websockets
 from loguru import logger
 from dotenv import load_dotenv, set_key
-from XianyuApis import XianyuApis
+from XianyuApis import RiskControlError, XianyuApis
 import sys
 
 
@@ -59,6 +59,8 @@ class XianyuLive:
         # Token刷新相关配置
         self.token_refresh_interval = int(os.getenv("TOKEN_REFRESH_INTERVAL", "3600"))  # Token刷新间隔，默认1小时
         self.token_retry_interval = int(os.getenv("TOKEN_RETRY_INTERVAL", "300"))       # Token重试间隔，默认5分钟
+        self.proactive_token_refresh_enabled = os.getenv("PROACTIVE_TOKEN_REFRESH_ENABLED", "false").lower() == "true"
+        self.risk_control_retry_interval = int(os.getenv("RISK_CONTROL_RETRY_INTERVAL", "1800"))
         self.last_token_refresh_time = 0
         self.current_token = None
         self.token_refresh_task = None
@@ -110,6 +112,9 @@ class XianyuLive:
             else:
                 logger.error(f"Token刷新失败: {token_result}")
                 return None
+        except RiskControlError as exc:
+            logger.error(f"Token刷新触发风控: {exc}")
+            raise
                 
         except Exception as e:
             logger.error(f"Token刷新异常: {str(e)}")
@@ -141,6 +146,10 @@ class XianyuLive:
                 
                 # 每分钟检查一次
                 await asyncio.sleep(60)
+
+            except RiskControlError as exc:
+                logger.error(f"Token刷新触发风控，进入退避: {exc}")
+                await asyncio.sleep(max(self.risk_control_retry_interval, 60))
                 
             except Exception as e:
                 logger.error(f"Token刷新循环出错: {e}")
@@ -676,7 +685,8 @@ class XianyuLive:
                     self.heartbeat_task = asyncio.create_task(self.heartbeat_loop(websocket))
                     
                     # 启动token刷新任务
-                    self.token_refresh_task = asyncio.create_task(self.token_refresh_loop())
+                    if self.proactive_token_refresh_enabled:
+                        self.token_refresh_task = asyncio.create_task(self.token_refresh_loop())
 
                     if self.async_task_poll_enabled:
                         self.async_task_poll_task = asyncio.create_task(self.async_task_poll_loop())
@@ -718,6 +728,9 @@ class XianyuLive:
                             logger.error(f"处理消息时发生错误: {str(e)}")
                             logger.debug(f"原始消息: {message}")
 
+            except RiskControlError as exc:
+                logger.error(f"连接过程触发风控，等待 {self.risk_control_retry_interval} 秒后重试: {exc}")
+
             except websockets.exceptions.ConnectionClosed:
                 logger.warning("WebSocket连接已关闭")
                 
@@ -751,6 +764,9 @@ class XianyuLive:
                 # 如果是主动重启，立即重连；否则等待5秒
                 if self.connection_restart_flag:
                     logger.info("主动重启连接，立即重连...")
+                elif self.current_token is None and self.risk_control_retry_interval > 0:
+                    logger.info(f"等待 {self.risk_control_retry_interval} 秒后重试...")
+                    await asyncio.sleep(self.risk_control_retry_interval)
                 else:
                     logger.info("等待5秒后重连...")
                     await asyncio.sleep(5)
