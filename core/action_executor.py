@@ -15,9 +15,11 @@ class ActionExecutor:
         self,
         send_msg_func: Optional[Callable[..., Any]],
         set_manual_mode_func: Optional[Callable[[str, bool], None]],
+        send_image_func: Optional[Callable[..., Any]] = None,
         track_async_task_func: Optional[Callable[[Dict[str, Any]], bool]] = None,
     ):
         self.send_msg_func = send_msg_func
+        self.send_image_func = send_image_func
         self.set_manual_mode_func = set_manual_mode_func
         self.track_async_task_func = track_async_task_func
 
@@ -29,6 +31,9 @@ class ActionExecutor:
     async def _execute_one(self, action: Action, runtime: Dict[str, Any]) -> None:
         if action.action_type == "send_text":
             await self._handle_send_text(action.payload, runtime)
+            return
+        if action.action_type == "send_image":
+            await self._handle_send_image(action.payload, runtime)
             return
         if action.action_type == "set_manual_mode":
             self._handle_set_manual_mode(action.payload)
@@ -54,6 +59,36 @@ class ActionExecutor:
             logger.warning(f"invalid send_text payload={payload}")
             return
         await self.send_msg_func(websocket, chat_id, to_user_id, text)
+
+    async def _handle_send_image(self, payload: Dict[str, Any], runtime: Dict[str, Any]) -> None:
+        websocket = runtime.get("websocket")
+        chat_id = payload.get("chat_id")
+        to_user_id = payload.get("to_user_id")
+        image_url = payload.get("image_url")
+        text = payload.get("text")
+
+        if websocket is None:
+            logger.warning("websocket is missing in runtime context, skip send_image")
+            return
+        if not all(isinstance(v, str) and v for v in [chat_id, to_user_id, image_url]):
+            logger.warning(f"invalid send_image payload={payload}")
+            return
+
+        if self.send_image_func is not None:
+            await self.send_image_func(websocket, chat_id, to_user_id, image_url, text)
+            return
+
+        if self.send_msg_func is None:
+            logger.warning("send_msg_func is not configured, skip send_image fallback")
+            return
+
+        fallback_text = payload.get("fallback_text")
+        if not isinstance(fallback_text, str) or not fallback_text:
+            if isinstance(text, str) and text:
+                fallback_text = text
+            else:
+                fallback_text = "请打开二维码图片完成扫码登录"
+        await self.send_msg_func(websocket, chat_id, to_user_id, f"{fallback_text}\n{image_url}")
 
     def _handle_set_manual_mode(self, payload: Dict[str, Any]) -> None:
         if self.set_manual_mode_func is None:

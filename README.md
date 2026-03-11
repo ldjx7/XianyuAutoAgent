@@ -193,11 +193,21 @@ RISK_CONTROL_RETRY_INTERVAL=1800
 {
   "actions": [
     {
+      "action_type": "send_image",
+      "payload": {
+        "chat_id": "chat123",
+        "to_user_id": "user123",
+        "image_url": "https://example.com/api/public/bili/qr/image?token=abc",
+        "text": "请扫码完成登录",
+        "fallback_text": "如果二维码图片未显示，请打开图片链接："
+      }
+    },
+    {
       "action_type": "send_text",
       "payload": {
         "chat_id": "chat123",
         "to_user_id": "user123",
-        "text": "请先点击链接完成登录：https://example.com/login/abc"
+        "text": "二维码已发送，登录成功后系统会自动继续处理。"
       }
     },
     {
@@ -216,6 +226,7 @@ RISK_CONTROL_RETRY_INTERVAL=1800
 }
 ```
 
+- `send_image` 适合直接把二维码图片发给买家；如果执行器未配置原生图片发送，会自动降级为文本消息。
 - `track_async_task` 只会对返回了该动作的订单生效，不会影响其他商品。
 - Agent 会把任务写入本地 SQLite，并在后台轮询 `status_url`。
 - 当轮询结果里的 `status` 变化时，若响应携带 `message` 或 `actions`，Agent 会只通知一次。

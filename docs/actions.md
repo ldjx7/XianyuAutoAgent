@@ -29,7 +29,29 @@
 }
 ```
 
-### 2. `set_manual_mode`
+### 2. `send_image`
+向目标会话发送图片消息。
+
+```json
+{
+  "action_type": "send_image",
+  "payload": {
+    "chat_id": "chat123",
+    "to_user_id": "user123",
+    "image_url": "https://biz.example.com/api/public/bili/qr/image?token=...",
+    "text": "请使用闲鱼内置浏览器或另一台设备扫码登录",
+    "fallback_text": "二维码图片如下，如果图片未正常展示请打开该链接："
+  },
+  "meta": {}
+}
+```
+
+约定：
+- `chat_id`、`to_user_id`、`image_url` 为必填。
+- `text` 为图片说明文案，可选。
+- 若执行器未配置原生图片发送能力，会自动退化为发送 `fallback_text + image_url` 的文本消息。
+
+### 3. `set_manual_mode`
 切换会话人工接管模式。
 
 ```json
@@ -43,7 +65,7 @@
 }
 ```
 
-### 3. `track_async_task`
+### 4. `track_async_task`
 记录一个需要后台轮询的外部异步任务。
 
 ```json

@@ -22,6 +22,10 @@ def _get_model_provider() -> str:
         return "openrouter"
     if "generativelanguage.googleapis.com" in base_url:
         return "gemini"
+    if "coding.dashscope.aliyuncs.com" in base_url:
+        return "dashscope_coding_plan"
+    if "dashscope.aliyuncs.com/compatible-mode/" in base_url:
+        return "dashscope_compatible"
     return "default"
 
 
@@ -29,7 +33,7 @@ def _build_tech_extra_body() -> Optional[Dict]:
     provider = _get_model_provider()
     if provider == "openrouter":
         return {"plugins": [{"id": "web"}]}
-    if provider == "gemini":
+    if provider in {"gemini", "dashscope_coding_plan", "default"}:
         return None
     return {"enable_search": True}
 

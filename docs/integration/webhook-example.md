@@ -57,11 +57,21 @@ def on_event():
             {
                 "actions": [
                     {
+                        "action_type": "send_image",
+                        "payload": {
+                            "chat_id": event["payload"].get("chat_id"),
+                            "to_user_id": event["payload"].get("user_id"),
+                            "image_url": "http://127.0.0.1:8080/api/public/bili/qr/image?token=example",
+                            "text": "请扫码完成 B 站登录",
+                            "fallback_text": "如果图片未展示，请打开二维码链接："
+                        }
+                    },
+                    {
                         "action_type": "send_text",
                         "payload": {
                             "chat_id": event["payload"].get("chat_id"),
                             "to_user_id": event["payload"].get("user_id"),
-                            "text": "订单状态已更新，稍后为您处理。",
+                            "text": "二维码已发送，登录后系统会自动开始处理。",
                         },
                     },
                     {
@@ -117,3 +127,4 @@ def on_event():
 建议：
 - 用 `ORDER_ITEM_WEBHOOK_ROUTES` 只给需要异步履约的商品开启这条链路。
 - 轮询状态接口保持幂等，同一 `task_id` 多次查询返回同一状态。
+- 对图片类登录流程，推荐同时返回 `send_image` 和 `track_async_task`；必要时再补一条文本兜底。
