@@ -61,6 +61,7 @@ class XianyuLive:
         self.token_retry_interval = int(os.getenv("TOKEN_RETRY_INTERVAL", "300"))       # Token重试间隔，默认5分钟
         self.proactive_token_refresh_enabled = os.getenv("PROACTIVE_TOKEN_REFRESH_ENABLED", "false").lower() == "true"
         self.risk_control_retry_interval = int(os.getenv("RISK_CONTROL_RETRY_INTERVAL", "1800"))
+        self.last_reconnect_reason = None
         self.last_token_refresh_time = 0
         self.current_token = None
         self.token_refresh_task = None
@@ -358,12 +359,24 @@ class XianyuLive:
         while True:
             try:
                 loop = asyncio.get_running_loop()
-                actions = await loop.run_in_executor(None, self.async_task_poller.poll_due_tasks)
-                if actions:
-                    await self.action_executor.execute(actions, context={"websocket": self.ws})
+                notifications = await loop.run_in_executor(None, self.async_task_poller.poll_due_tasks)
+                for notification in notifications:
+                    try:
+                        await self.action_executor.execute(notification.actions, context={"websocket": self.ws})
+                    except Exception as exc:
+                        logger.error(f"异步任务动作执行失败 task_id={notification.task_id}: {exc}")
+                        continue
+                    self.async_task_poller.acknowledge_delivered(notification, delivered_at=int(time.time()))
             except Exception as exc:
                 logger.error(f"异步任务轮询失败: {exc}")
             await asyncio.sleep(max(self.async_task_poll_interval, 1))
+
+    def get_reconnect_delay_seconds(self):
+        if self.connection_restart_flag:
+            return 0
+        if self.last_reconnect_reason == "risk_control" and self.risk_control_retry_interval > 0:
+            return self.risk_control_retry_interval
+        return 5
 
     def _build_event_handlers(self):
         handlers = [
@@ -660,6 +673,7 @@ class XianyuLive:
             try:
                 # 重置连接重启标志
                 self.connection_restart_flag = False
+                self.last_reconnect_reason = None
                 
                 headers = {
                     "Cookie": self.cookies_str,
@@ -729,6 +743,7 @@ class XianyuLive:
                             logger.debug(f"原始消息: {message}")
 
             except RiskControlError as exc:
+                self.last_reconnect_reason = "risk_control"
                 logger.error(f"连接过程触发风控，等待 {self.risk_control_retry_interval} 秒后重试: {exc}")
 
             except websockets.exceptions.ConnectionClosed:
@@ -762,14 +777,12 @@ class XianyuLive:
                     self.async_task_poll_task = None
                 
                 # 如果是主动重启，立即重连；否则等待5秒
-                if self.connection_restart_flag:
+                delay = self.get_reconnect_delay_seconds()
+                if delay == 0:
                     logger.info("主动重启连接，立即重连...")
-                elif self.current_token is None and self.risk_control_retry_interval > 0:
-                    logger.info(f"等待 {self.risk_control_retry_interval} 秒后重试...")
-                    await asyncio.sleep(self.risk_control_retry_interval)
                 else:
-                    logger.info("等待5秒后重连...")
-                    await asyncio.sleep(5)
+                    logger.info(f"等待{delay}秒后重连...")
+                    await asyncio.sleep(delay)
 
 
 
