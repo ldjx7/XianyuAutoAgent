@@ -1,6 +1,7 @@
 import base64
 import json
 import asyncio
+import inspect
 import time
 import os
 import websockets
@@ -31,10 +32,10 @@ class ChatAutoReplyHandler(EventHandler):
         self.live = live
         self.enabled = os.getenv("CHAT_AUTO_REPLY_ENABLED", "true").lower() == "true"
 
-    def handle(self, event: Event):
+    async def handle(self, event: Event):
         if not self.enabled or event.event_type != "chat.message.received":
             return []
-        return self.live.handle_chat_event(event)
+        return await self.live.handle_chat_event(event)
 
 
 class XianyuLive:
@@ -77,9 +78,10 @@ class XianyuLive:
         
         # 人工接管关键词，从环境变量读取
         self.toggle_keywords = os.getenv("TOGGLE_KEYWORDS", "。")
-        
+
         # 模拟人工输入配置
         self.simulate_human_typing = os.getenv("SIMULATE_HUMAN_TYPING", "False").lower() == "true"
+        self.llm_request_timeout_seconds = float(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "45"))
         self.async_task_poll_enabled = os.getenv("ASYNC_TASK_POLL_ENABLED", "true").lower() == "true"
         self.async_task_poll_interval = int(os.getenv("ASYNC_TASK_POLL_INTERVAL_SECONDS", "5"))
         self.async_task_poll_task = None
@@ -400,14 +402,38 @@ class XianyuLive:
             actions = []
             for handler in self.event_handlers:
                 try:
-                    produced = handler.handle(event) or []
+                    produced = handler.handle(event)
+                    if inspect.isawaitable(produced):
+                        produced = await produced
+                    produced = produced or []
                     actions.extend(produced)
                 except Exception as exc:
                     logger.error(f"handler={handler.name} event={event.event_type} error={exc}")
             if actions:
                 await self.action_executor.execute(actions, context={"websocket": websocket})
 
-    def handle_chat_event(self, event):
+    async def generate_bot_reply_async(self, bot_instance, send_message, item_description, context):
+        started_at = time.time()
+        try:
+            reply = await asyncio.wait_for(
+                asyncio.to_thread(
+                    bot_instance.generate_reply,
+                    send_message,
+                    item_description,
+                    context,
+                ),
+                timeout=self.llm_request_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"LLM请求超时，已跳过本次自动回复: timeout={self.llm_request_timeout_seconds}s")
+            return None
+
+        elapsed_seconds = time.time() - started_at
+        if elapsed_seconds >= 10:
+            logger.warning(f"LLM回复耗时较长: {elapsed_seconds:.2f}s")
+        return reply
+
+    async def handle_chat_event(self, event):
         payload = event.payload if isinstance(event.payload, dict) else {}
         raw_message = payload.get("raw")
         raw_message = raw_message if isinstance(raw_message, dict) else {}
@@ -483,7 +509,15 @@ class XianyuLive:
             logger.warning("未配置回复机器人，跳过自动回复")
             return []
 
-        bot_reply = bot_instance.generate_reply(send_message, item_description, context=context)
+        bot_reply = await self.generate_bot_reply_async(
+            bot_instance,
+            send_message,
+            item_description,
+            context,
+        )
+        if bot_reply is None:
+            logger.warning(f"会话 {chat_id} 的AI回复超时或失败，跳过自动回复")
+            return []
         if bot_reply == "-":
             logger.info(f"[无需回复] 用户 {send_user_name} 的消息被识别为无需回复类型")
             return []

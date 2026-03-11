@@ -86,6 +86,19 @@ class TechAgentProviderCompatibilityTest(unittest.TestCase):
 
         self.assertNotIn("extra_body", self.client.chat.completions.last_kwargs)
 
+    def test_tech_agent_skips_search_extra_body_for_dashscope_coding_plan(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MODEL_BASE_URL": "https://coding.dashscope.aliyuncs.com/v1",
+                "MODEL_NAME": "qwen3.5-plus",
+            },
+            clear=False,
+        ):
+            self.agent.generate("参数怎么样", "功放", "user: 在吗")
+
+        self.assertNotIn("extra_body", self.client.chat.completions.last_kwargs)
+
 
 if __name__ == "__main__":
     unittest.main()
