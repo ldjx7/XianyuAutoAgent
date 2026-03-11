@@ -76,6 +76,26 @@ SIMULATE_HUMAN_TYPING=True/False #模拟人工回复延迟
 注意：默认使用的模型是通义千问，如需使用其他API，请自行修改.env文件中的模型地址和模型名称；
 COOKIES_STR自行在闲鱼网页端获取cookies(网页端F12打开控制台，选择Network，点击Fetch/XHR,点击一个请求，查看cookies)
 
+常见模型配置示例：
+```bash
+# DashScope / 通义千问
+MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+MODEL_NAME=qwen-max
+
+# OpenRouter
+MODEL_BASE_URL=https://openrouter.ai/api/v1
+MODEL_NAME=openrouter/auto
+
+# Gemini (Google AI Studio OpenAI 兼容层)
+MODEL_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+MODEL_NAME=gemini-3-flash-preview
+```
+
+说明：
+- Gemini 通过 Google AI Studio API Key 直接接入。
+- 当前项目已对 `DashScope / OpenRouter / Gemini(AI Studio)` 做基础兼容。
+- `tech` 路由在 DashScope / OpenRouter 下会启用对应联网搜索参数；Gemini OpenAI 兼容层下默认不注入当前搜索参数，避免请求不兼容。
+
 4. 创建提示词文件prompts/*_prompt.txt（也可以直接将模板名称中的_example去掉），否则默认读取四个提示词模板中的内容
 ```
 

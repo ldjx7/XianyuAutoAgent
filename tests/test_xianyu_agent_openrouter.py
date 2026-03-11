@@ -73,6 +73,19 @@ class TechAgentProviderCompatibilityTest(unittest.TestCase):
             {"plugins": [{"id": "web"}]},
         )
 
+    def test_tech_agent_skips_search_extra_body_for_gemini_openai_compat(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MODEL_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai/",
+                "MODEL_NAME": "gemini-3-flash-preview",
+            },
+            clear=False,
+        ):
+            self.agent.generate("参数怎么样", "功放", "user: 在吗")
+
+        self.assertNotIn("extra_body", self.client.chat.completions.last_kwargs)
+
 
 if __name__ == "__main__":
     unittest.main()

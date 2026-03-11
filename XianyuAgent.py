@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 import os
 from openai import OpenAI
 from loguru import logger
@@ -16,10 +16,21 @@ def _get_model_name() -> str:
     return os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
 
 
-def _build_tech_extra_body() -> Dict:
+def _get_model_provider() -> str:
     base_url = _get_model_base_url().lower()
     if "openrouter.ai" in base_url:
+        return "openrouter"
+    if "generativelanguage.googleapis.com" in base_url:
+        return "gemini"
+    return "default"
+
+
+def _build_tech_extra_body() -> Optional[Dict]:
+    provider = _get_model_provider()
+    if provider == "openrouter":
         return {"plugins": [{"id": "web"}]}
+    if provider == "gemini":
+        return None
     return {"enable_search": True}
 
 
@@ -285,8 +296,10 @@ class TechAgent(BaseAgent):
             "temperature": 0.4,
             "max_tokens": 500,
             "top_p": 0.8,
-            "extra_body": _build_tech_extra_body(),
         }
+        extra_body = _build_tech_extra_body()
+        if extra_body is not None:
+            request_kwargs["extra_body"] = extra_body
 
         response = self.client.chat.completions.create(
             **request_kwargs,

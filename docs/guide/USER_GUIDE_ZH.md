@@ -45,6 +45,14 @@ MODEL_NAME=qwen-max
 说明：
 - `API_KEY`：你自己的大模型平台 key。
 - `COOKIES_STR`：从闲鱼网页端抓取。
+- 如果使用 Gemini（Google AI Studio）：
+```bash
+API_KEY=你的_GEMINI_API_KEY
+MODEL_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+MODEL_NAME=gemini-3-flash-preview
+```
+- 当前项目已兼容 DashScope / OpenRouter / Gemini(AI Studio) 的基础聊天请求。
+- `tech` 路由在 Gemini OpenAI 兼容层下默认不发送当前联网搜索参数，避免与 Gemini 的工具接口差异冲突。
 
 ### 3.2 获取 `COOKIES_STR`（网页端）
 1. 打开闲鱼网页版并登录。
