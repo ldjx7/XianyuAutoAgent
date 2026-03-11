@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +21,14 @@ from core.models import Action
 FINAL_STATUSES = {"passed", "failed", "timeout", "cancelled", "completed"}
 
 
+@dataclass
+class PendingNotification:
+    task_id: str
+    status: str
+    actions: List[Action]
+    completed_at: Optional[int]
+
+
 class AsyncTaskPoller:
     def __init__(self, store, timeout_ms: Optional[int] = None, batch_size: Optional[int] = None):
         self.store = store
@@ -32,15 +41,17 @@ class AsyncTaskPoller:
             default=20,
         )
 
-    def poll_due_tasks(self, now_ts: Optional[int] = None) -> List[Action]:
+    def poll_due_tasks(self, now_ts: Optional[int] = None) -> List[PendingNotification]:
         current = int(now_ts if now_ts is not None else time.time())
         tasks = self.store.list_due_tasks(now_ts=current, limit=self.batch_size)
-        actions: List[Action] = []
+        pending: List[PendingNotification] = []
         for task in tasks:
-            actions.extend(self._poll_task(task, current))
-        return actions
+            result = self._poll_task(task, current)
+            if result is not None:
+                pending.append(result)
+        return pending
 
-    def _poll_task(self, task: Dict[str, Any], now_ts: int) -> List[Action]:
+    def _poll_task(self, task: Dict[str, Any], now_ts: int) -> Optional[PendingNotification]:
         task_id = task["task_id"]
         interval = _to_positive_int(task.get("poll_interval_seconds"), default=5)
         next_poll_at = now_ts + interval
@@ -54,7 +65,7 @@ class AsyncTaskPoller:
                 last_polled_at=now_ts,
                 last_error=str(exc),
             )
-            return []
+            return None
 
         if not (200 <= response.status_code < 300):
             self.store.update_task(
@@ -63,7 +74,7 @@ class AsyncTaskPoller:
                 last_polled_at=now_ts,
                 last_error=f"http {response.status_code}",
             )
-            return []
+            return None
 
         try:
             data = response.json()
@@ -74,7 +85,7 @@ class AsyncTaskPoller:
                 last_polled_at=now_ts,
                 last_error=f"invalid json: {exc}",
             )
-            return []
+            return None
 
         if not isinstance(data, dict):
             self.store.update_task(
@@ -83,7 +94,7 @@ class AsyncTaskPoller:
                 last_polled_at=now_ts,
                 last_error="invalid response payload",
             )
-            return []
+            return None
 
         status = _normalize_status(data.get("status") or data.get("task_status") or task.get("status"))
         serialized = json.dumps(data, ensure_ascii=False, sort_keys=True)
@@ -93,6 +104,23 @@ class AsyncTaskPoller:
             actions = self._extract_actions(data, task, status)
 
         completed_at = now_ts if status in FINAL_STATUSES else None
+        if should_notify and actions:
+            self.store.update_task(
+                task_id,
+                status=status,
+                next_poll_at=next_poll_at,
+                last_polled_at=now_ts,
+                last_error=None,
+                last_response=serialized,
+                completed_at=None,
+            )
+            return PendingNotification(
+                task_id=task_id,
+                status=status,
+                actions=actions,
+                completed_at=completed_at,
+            )
+
         self.store.update_task(
             task_id,
             status=status,
@@ -100,10 +128,19 @@ class AsyncTaskPoller:
             last_polled_at=now_ts,
             last_error=None,
             last_response=serialized,
-            last_notified_status=status if actions else task.get("last_notified_status"),
+            last_notified_status=status if should_notify else task.get("last_notified_status"),
             completed_at=completed_at,
         )
-        return actions
+        return None
+
+    def acknowledge_delivered(self, notification: PendingNotification, delivered_at: Optional[int] = None) -> None:
+        if notification is None:
+            return
+        self.store.update_task(
+            notification.task_id,
+            last_notified_status=notification.status,
+            completed_at=notification.completed_at,
+        )
 
     def _request_status(self, task: Dict[str, Any]):
         method = str(task.get("status_method") or "GET").upper()
