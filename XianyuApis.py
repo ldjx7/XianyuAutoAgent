@@ -8,6 +8,10 @@ from loguru import logger
 from utils.xianyu_utils import generate_sign
 
 
+class RiskControlError(RuntimeError):
+    """Raised when Xianyu requests are blocked by anti-bot verification."""
+
+
 class XianyuApis:
     def __init__(self):
         self.url = 'https://h5api.m.goofish.com/h5/mtop.taobao.idlemessage.pc.login.token/1.0/'
@@ -187,28 +191,30 @@ class XianyuApis:
                     if 'RGV587_ERROR' in error_msg or '被挤爆啦' in error_msg:
                         logger.error(f"❌ 触发风控: {ret_value}")
                         logger.error("🔴 系统目前无法自动解决，请进入闲鱼网页版-点击消息-过滑块-复制最新的Cookie")
-                        
+                        if not self._allow_interactive_cookie_update():
+                            raise RiskControlError("triggered anti-bot verification and no interactive terminal is available")
+
                         # 获取用户输入的新Cookie
                         print("\n" + "="*50)
                         new_cookie_str = input("请输入新的Cookie字符串 (复制浏览器中的完整cookie，直接回车则退出程序): ").strip()
                         print("="*50 + "\n")
-                        
+
                         if new_cookie_str:
                             try:
                                 # 解析cookie字符串并更新session
                                 from http.cookies import SimpleCookie
                                 cookie = SimpleCookie()
                                 cookie.load(new_cookie_str)
-                                
+
                                 # 清空旧cookie并设置新cookie
                                 self.session.cookies.clear()
                                 for key, morsel in cookie.items():
                                     self.session.cookies.set(key, morsel.value, domain='.goofish.com')
-                                
+
                                 logger.success("✅ Cookie已更新，正在尝试重连...")
                                 # 同步更新到.env文件
                                 self.update_env_cookies()
-                                
+
                                 # 立即重试
                                 return self.get_token(device_id, 0)
                             except Exception as e:
@@ -232,10 +238,23 @@ class XianyuApis:
                 logger.error(f"Token API返回格式异常: {res_json}")
                 return self.get_token(device_id, retry_count + 1)
                 
+        except RiskControlError:
+            raise
         except Exception as e:
             logger.error(f"Token API请求异常: {str(e)}")
             time.sleep(0.5)
             return self.get_token(device_id, retry_count + 1)
+
+    def _allow_interactive_cookie_update(self):
+        configured = os.getenv("ALLOW_INTERACTIVE_COOKIE_UPDATE", "auto").strip().lower()
+        if configured in {"0", "false", "no", "off"}:
+            return False
+        if configured in {"1", "true", "yes", "on"}:
+            return True
+
+        stdin = getattr(sys.stdin, "isatty", lambda: False)()
+        stdout = getattr(sys.stdout, "isatty", lambda: False)()
+        return bool(stdin and stdout)
 
     def get_item_info(self, item_id, retry_count=0):
         """获取商品信息，自动处理token失效的情况"""
