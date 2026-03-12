@@ -4,6 +4,10 @@ import asyncio
 import inspect
 import time
 import os
+import math
+from urllib.parse import unquote, urlparse
+
+import requests
 import websockets
 from loguru import logger
 from dotenv import load_dotenv, set_key
@@ -22,6 +26,8 @@ from core.event_parser import parse_events
 from core.handlers.base import EventHandler
 from core.handlers.order_route_handler import OrderRouteHandler
 from core.handlers.registry import load_handlers_from_env
+from core.item_whitelist import ItemWhitelistStore
+from core.item_whitelist_api import ItemWhitelistApiServer
 from core.models import Action, Event
 
 
@@ -84,10 +90,22 @@ class XianyuLive:
         self.llm_request_timeout_seconds = float(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "45"))
         self.async_task_poll_enabled = os.getenv("ASYNC_TASK_POLL_ENABLED", "true").lower() == "true"
         self.async_task_poll_interval = int(os.getenv("ASYNC_TASK_POLL_INTERVAL_SECONDS", "5"))
+        self.ws_request_timeout_seconds = float(os.getenv("WS_REQUEST_TIMEOUT_SECONDS", "10"))
+        self.auto_reply_item_whitelist_enabled = os.getenv("AUTO_REPLY_ITEM_WHITELIST_ENABLED", "false").lower() == "true"
+        self.item_whitelist_store = ItemWhitelistStore(
+            file_path=os.getenv("AUTO_REPLY_ITEM_WHITELIST_FILE", "data/item_whitelist.json"),
+            env_item_ids=os.getenv("AUTO_REPLY_ITEM_WHITELIST", ""),
+        )
+        self.item_whitelist_api_server = None
+        self._init_item_whitelist_api_server()
         self.async_task_poll_task = None
+        self.background_tasks = set()
+        self.pending_ws_requests = {}
         self.async_task_store = AsyncTaskStore(db_path=self.context_manager.get_db_path())
         self.action_executor = ActionExecutor(
             send_msg_func=self.send_msg,
+            send_image_func=self.send_image,
+            render_message_func=self.render_message_action,
             set_manual_mode_func=self.set_manual_mode,
             track_async_task_func=self.async_task_store.upsert_task,
         )
@@ -98,6 +116,26 @@ class XianyuLive:
             ttl_seconds=int(os.getenv("EVENT_DEDUP_TTL_SECONDS", "86400")),
         )
         self.event_handlers = self._build_event_handlers()
+
+    def _init_item_whitelist_api_server(self):
+        api_enabled = os.getenv("AUTO_REPLY_ITEM_WHITELIST_API_ENABLED", "false").lower() == "true"
+        if not api_enabled:
+            return
+
+        bearer_token = os.getenv("AUTO_REPLY_ITEM_WHITELIST_API_TOKEN", "").strip()
+        if not bearer_token:
+            logger.warning("商品白名单管理接口已禁用：缺少 AUTO_REPLY_ITEM_WHITELIST_API_TOKEN")
+            return
+
+        host = os.getenv("AUTO_REPLY_ITEM_WHITELIST_API_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        port = int(os.getenv("AUTO_REPLY_ITEM_WHITELIST_API_PORT", "8765"))
+        self.item_whitelist_api_server = ItemWhitelistApiServer(
+            store=self.item_whitelist_store,
+            host=host,
+            port=port,
+            bearer_token=bearer_token,
+        )
+        self.item_whitelist_api_server.start()
 
     async def refresh_token(self):
         """刷新token"""
@@ -203,6 +241,328 @@ class XianyuLive:
             ]
         }
         await ws.send(json.dumps(msg))
+
+    def _normalize_request_mid(self, mid):
+        if not isinstance(mid, str):
+            return ""
+        return mid.split(" ", 1)[0].strip()
+
+    def _track_background_task(self, task):
+        self.background_tasks.add(task)
+
+        def _done_callback(done_task):
+            self.background_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.error(f"后台任务执行失败: {exc}")
+
+        task.add_done_callback(_done_callback)
+        return task
+
+    async def _send_ws_request(self, ws, lwp, body=None, headers=None, timeout=None):
+        request_headers = dict(headers or {})
+        request_headers["mid"] = request_headers.get("mid") or generate_mid()
+        request_mid = self._normalize_request_mid(request_headers["mid"])
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self.pending_ws_requests[request_mid] = future
+        payload = {
+            "lwp": lwp,
+            "headers": request_headers,
+        }
+        if body is not None:
+            payload["body"] = body
+        await ws.send(json.dumps(payload))
+        try:
+            return await asyncio.wait_for(
+                future,
+                timeout=timeout if timeout is not None else self.ws_request_timeout_seconds,
+            )
+        finally:
+            self.pending_ws_requests.pop(request_mid, None)
+
+    def _resolve_pending_ws_request(self, message_data):
+        try:
+            mid = message_data.get("headers", {}).get("mid")
+        except Exception:
+            return False
+        request_mid = self._normalize_request_mid(mid)
+        if not request_mid:
+            return False
+        future = self.pending_ws_requests.get(request_mid)
+        if future is None or future.done():
+            return False
+        future.set_result(message_data)
+        return True
+
+    def _extract_message_id(self, raw_message):
+        if not isinstance(raw_message, dict):
+            return None
+        message_node = raw_message.get("1")
+        if isinstance(message_node, dict):
+            message_id = message_node.get("3")
+            if isinstance(message_id, str) and message_id:
+                return message_id
+        return None
+
+    async def mark_message_read(self, ws, message_id):
+        if not isinstance(message_id, str) or not message_id:
+            return
+        response = await self._send_ws_request(
+            ws,
+            "/r/MessageStatus/read",
+            body=[[message_id]],
+        )
+        if response.get("code") != 200:
+            raise RuntimeError(f"mark_message_read failed: {response}")
+
+    async def clear_conversation_red_point(self, ws, chat_id, message_id):
+        if not all(isinstance(v, str) and v for v in [chat_id, message_id]):
+            return
+        response = await self._send_ws_request(
+            ws,
+            "/r/Conversation/clearRedPoint",
+            body=[[{"cid": chat_id, "messageId": message_id}]],
+        )
+        if response.get("code") != 200:
+            raise RuntimeError(f"clear_conversation_red_point failed: {response}")
+
+    async def mark_message_read_and_view(self, ws, chat_id, message_id):
+        if not all(isinstance(v, str) and v for v in [chat_id, message_id]):
+            return
+        await self.mark_message_read(ws, message_id)
+        await self.clear_conversation_red_point(ws, chat_id, message_id)
+
+    def _guess_image_extension(self, image_url, content_type):
+        parsed = urlparse(image_url)
+        filename = os.path.basename(parsed.path or "")
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if ext in {"jpg", "jpeg", "png", "gif", "bmp", "webp"}:
+            return "jpg" if ext == "jpeg" else ext
+        content_main = content_type.split(";", 1)[0].strip().lower()
+        return {
+            "image/jpeg": "jpg",
+            "image/jpg": "jpg",
+            "image/png": "png",
+            "image/gif": "gif",
+            "image/bmp": "bmp",
+            "image/webp": "webp",
+        }.get(content_main, "png")
+
+    def _guess_image_filename(self, image_url, content_type):
+        parsed = urlparse(image_url)
+        filename = os.path.basename(parsed.path or "")
+        if filename:
+            return unquote(filename)
+        return f"qr-image.{self._guess_image_extension(image_url, content_type)}"
+
+    def _extract_png_dimensions(self, image_bytes):
+        if len(image_bytes) < 24 or image_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+            return None
+        width = int.from_bytes(image_bytes[16:20], "big")
+        height = int.from_bytes(image_bytes[20:24], "big")
+        return width, height
+
+    def _extract_gif_dimensions(self, image_bytes):
+        if len(image_bytes) < 10 or image_bytes[:6] not in {b"GIF87a", b"GIF89a"}:
+            return None
+        width = int.from_bytes(image_bytes[6:8], "little")
+        height = int.from_bytes(image_bytes[8:10], "little")
+        return width, height
+
+    def _extract_jpeg_dimensions(self, image_bytes):
+        if len(image_bytes) < 4 or image_bytes[:2] != b"\xff\xd8":
+            return None
+        offset = 2
+        while offset + 9 < len(image_bytes):
+            if image_bytes[offset] != 0xFF:
+                offset += 1
+                continue
+            marker = image_bytes[offset + 1]
+            offset += 2
+            if marker in {0xD8, 0xD9}:
+                continue
+            if offset + 2 > len(image_bytes):
+                return None
+            segment_length = int.from_bytes(image_bytes[offset:offset + 2], "big")
+            if segment_length < 2 or offset + segment_length > len(image_bytes):
+                return None
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                height = int.from_bytes(image_bytes[offset + 3:offset + 5], "big")
+                width = int.from_bytes(image_bytes[offset + 5:offset + 7], "big")
+                return width, height
+            offset += segment_length
+        return None
+
+    def _extract_webp_dimensions(self, image_bytes):
+        if len(image_bytes) < 30 or image_bytes[:4] != b"RIFF" or image_bytes[8:12] != b"WEBP":
+            return None
+        chunk_type = image_bytes[12:16]
+        if chunk_type == b"VP8X" and len(image_bytes) >= 30:
+            width = int.from_bytes(image_bytes[24:27] + b"\x00", "little") + 1
+            height = int.from_bytes(image_bytes[27:30] + b"\x00", "little") + 1
+            return width, height
+        return None
+
+    def _extract_image_dimensions(self, image_bytes, image_type):
+        parsers = {
+            "png": self._extract_png_dimensions,
+            "gif": self._extract_gif_dimensions,
+            "jpg": self._extract_jpeg_dimensions,
+            "webp": self._extract_webp_dimensions,
+        }
+        parser = parsers.get(image_type)
+        if parser is None:
+            return 0, 0
+        dimensions = parser(image_bytes)
+        if not dimensions:
+            return 0, 0
+        return dimensions
+
+    def _build_image_file_info(self, image_url, content_type, image_bytes):
+        image_type = self._guess_image_extension(image_url, content_type)
+        width, height = self._extract_image_dimensions(image_bytes, image_type)
+        filename = self._guess_image_filename(image_url, content_type)
+        return {
+            "name": filename,
+            "size": len(image_bytes),
+            "type": image_type,
+            "typeOrigin": image_type,
+            "width": width,
+            "height": height,
+            "typeId": {"jpg": 0, "gif": 1, "png": 2, "bmp": 3, "webp": 29}.get(image_type, 8),
+            "fileType": {"webp": 1, "png": 2, "jpg": 3, "gif": 4}.get(image_type, 2),
+        }
+
+    async def _fetch_image_bytes(self, image_url):
+        response = await asyncio.to_thread(requests.get, image_url, timeout=15)
+        response.raise_for_status()
+        content_type = response.headers.get("Content-Type", "")
+        if not content_type.lower().startswith("image/"):
+            raise ValueError(f"image_url did not return image content: {content_type}")
+        return response.content, content_type
+
+    async def send_image(self, ws, cid, toid, image_url, text=None):
+        if not all(isinstance(v, str) and v for v in [cid, toid, image_url]):
+            raise ValueError("invalid send_image arguments")
+
+        image_bytes, content_type = await self._fetch_image_bytes(image_url)
+        file_info = self._build_image_file_info(image_url, content_type, image_bytes)
+        upload_uuid = generate_uuid()
+        pre_payload = {
+            "conversationId": cid,
+            "type": file_info["type"],
+            "fileLen": file_info["size"],
+            "isInternal": False,
+            "mediaIdVer": 2,
+            "authType": 6,
+            "expireTime": 120,
+            "onlyAuth": True,
+            "bizType": "impaas",
+            "bizEntity": {},
+        }
+        if file_info["width"] and file_info["height"]:
+            pre_payload["width"] = file_info["width"]
+            pre_payload["height"] = file_info["height"]
+
+        pre_response = await self._send_ws_request(ws, "/r/FileUpload/pre", body=[pre_payload])
+        pre_body = pre_response.get("body") or {}
+        upload_info = pre_body.get("uploadInfo")
+        media_id = pre_body.get("mediaId")
+        if pre_response.get("code") != 200 or not upload_info or not media_id:
+            raise RuntimeError(f"image upload pre failed: {pre_response}")
+
+        frag_len = int(pre_body.get("fragLen") or 102400)
+        total_parts = max(1, math.ceil(file_info["size"] / frag_len))
+        last_part_number = total_parts - 1
+
+        for part_number in range(total_parts - 1):
+            chunk = image_bytes[part_number * frag_len:(part_number + 1) * frag_len]
+            frag_response = await self._send_ws_request(
+                ws,
+                "/r/FileUpload/frag",
+                body=[{
+                    "uploadInfo": upload_info,
+                    "mediaId": media_id,
+                    "partNumber": part_number,
+                    "body": base64.b64encode(chunk).decode("utf-8"),
+                }],
+            )
+            frag_body = frag_response.get("body") or {}
+            if frag_response.get("code") != 200 or frag_body.get("uploadInfo") != upload_info:
+                raise RuntimeError(f"image upload frag failed: {frag_response}")
+
+        final_chunk = image_bytes[last_part_number * frag_len:(last_part_number + 1) * frag_len]
+        ci_response = await self._send_ws_request(
+            ws,
+            "/r/FileUpload/ci",
+            body=[{
+                "conversationId": cid,
+                "uploadId": upload_info,
+                "mediaId": media_id,
+                "partNumber": last_part_number,
+                "body": base64.b64encode(final_chunk).decode("utf-8"),
+                "totalPartNumber": total_parts,
+                "bizType": "impaas",
+                "bizEntity": {},
+            }],
+        )
+        ci_body = ci_response.get("body") or {}
+        auth_media_id = ci_body.get("authMediaId")
+        if ci_response.get("code") != 200 or not auth_media_id:
+            raise RuntimeError(f"image upload ci failed: {ci_response}")
+
+        message_body = {
+            "uuid": upload_uuid,
+            "cid": f"{cid}@goofish",
+            "conversationType": 1,
+            "content": {
+                "photo": {
+                    "mediaId": auth_media_id,
+                    "picSize": file_info["size"],
+                    "type": file_info["typeId"],
+                    "fileType": file_info["fileType"],
+                    "orientation": 0,
+                    "extension": {
+                        "width": str(file_info["width"] or 0),
+                        "height": str(file_info["height"] or 0),
+                        "type": file_info["type"],
+                        "typeOrigin": file_info["typeOrigin"],
+                    },
+                    "filename": file_info["name"],
+                },
+                "contentType": 2,
+            },
+            "redPointPolicy": 0,
+            "extension": {
+                "extJson": "{}"
+            },
+            "ctx": {
+                "appVersion": "1.0",
+                "platform": "web"
+            },
+            "mtags": {},
+            "msgReadStatusSetting": 1,
+        }
+        receiver_scope = {
+            "actualReceivers": [
+                f"{toid}@goofish",
+                f"{self.myid}@goofish",
+            ]
+        }
+        send_response = await self._send_ws_request(
+            ws,
+            "/r/MessageSend/sendByReceiverScope",
+            body=[message_body, receiver_scope],
+        )
+        if send_response.get("code") != 200:
+            raise RuntimeError(f"send photo message failed: {send_response}")
+
+        if isinstance(text, str) and text.strip():
+            await self.send_msg(ws, cid, toid, text.strip())
 
     async def init(self, ws):
         # 如果没有token或者token过期，获取新token
@@ -396,6 +756,8 @@ class XianyuLive:
             return
 
         for event in events:
+            if isinstance(event.payload, dict):
+                event.payload["websocket"] = websocket
             if self.event_dedup_store.is_duplicate(event.event_id):
                 logger.info(f"重复事件已跳过: {event.event_id}")
                 continue
@@ -433,10 +795,113 @@ class XianyuLive:
             logger.warning(f"LLM回复耗时较长: {elapsed_seconds:.2f}s")
         return reply
 
+    async def render_workflow_message_async(self, bot_instance, scene, facts, instructions, item_description, context):
+        started_at = time.time()
+        try:
+            reply = await asyncio.wait_for(
+                asyncio.to_thread(
+                    bot_instance.render_workflow_message,
+                    scene=scene,
+                    facts=facts,
+                    instructions=instructions,
+                    item_desc=item_description,
+                    context=context,
+                ),
+                timeout=self.llm_request_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"工作流消息渲染超时，已回退模板: timeout={self.llm_request_timeout_seconds}s")
+            return None
+        except Exception as exc:
+            logger.error(f"工作流消息渲染失败，已回退模板: {exc}")
+            return None
+
+        elapsed_seconds = time.time() - started_at
+        if elapsed_seconds >= 10:
+            logger.warning(f"工作流消息渲染耗时较长: {elapsed_seconds:.2f}s")
+        return reply
+
+    def _extract_render_message_fallback(self, payload):
+        fallback_text = payload.get("fallback_text")
+        if isinstance(fallback_text, str) and fallback_text.strip():
+            return fallback_text.strip()
+
+        facts = payload.get("facts")
+        if isinstance(facts, dict):
+            for key in ("message", "notify_text", "result_message", "text", "summary"):
+                value = facts.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+            result = facts.get("result")
+            if isinstance(result, dict):
+                for key in ("message", "notify_text", "result_message", "text", "summary"):
+                    value = result.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                score = result.get("score")
+                if score is not None:
+                    return f"处理已完成，结果分数 {score} 分。"
+
+            score = facts.get("score")
+            if score is not None:
+                return f"处理已完成，结果分数 {score} 分。"
+
+            status = facts.get("status")
+            if isinstance(status, str) and status:
+                return f"当前处理状态已更新：{status}"
+
+        return "当前订单处理状态已更新，请留意后续消息。"
+
+    async def render_message_action(self, ws, payload):
+        chat_id = payload.get("chat_id")
+        to_user_id = payload.get("to_user_id")
+        if not all(isinstance(v, str) and v for v in [chat_id, to_user_id]):
+            logger.warning(f"invalid render_message payload={payload}")
+            return
+
+        fallback_text = self._extract_render_message_fallback(payload)
+        scene = payload.get("scene") or "workflow_result"
+        facts = payload.get("facts") if isinstance(payload.get("facts"), dict) else {}
+        instructions = payload.get("instructions")
+
+        context = self.context_manager.get_context_by_chat(chat_id)
+        item_id = self.context_manager.get_item_id_by_chat(chat_id)
+        item_info = self.context_manager.get_item_info(item_id) if item_id else None
+        if item_info:
+            item_description = f"当前商品的信息如下：{self.build_item_description(item_info)}"
+        else:
+            item_description = "当前商品信息未知"
+
+        bot_instance = self.reply_bot or globals().get("bot")
+        rendered_text = None
+        if bot_instance is not None and hasattr(bot_instance, "render_workflow_message"):
+            rendered_text = await self.render_workflow_message_async(
+                bot_instance,
+                scene,
+                facts,
+                instructions,
+                item_description,
+                context,
+            )
+
+        final_text = rendered_text.strip() if isinstance(rendered_text, str) and rendered_text.strip() else fallback_text
+        if not isinstance(final_text, str) or not final_text.strip():
+            logger.warning(f"render_message produced empty output payload={payload}")
+            return
+
+        await self.send_msg(ws, chat_id, to_user_id, final_text.strip())
+
+    def is_auto_reply_item_allowed(self, item_id):
+        if not self.auto_reply_item_whitelist_enabled:
+            return True
+        return self.item_whitelist_store.is_allowed(item_id)
+
     async def handle_chat_event(self, event):
         payload = event.payload if isinstance(event.payload, dict) else {}
         raw_message = payload.get("raw")
         raw_message = raw_message if isinstance(raw_message, dict) else {}
+        websocket = payload.get("websocket")
 
         chat_id = payload.get("chat_id")
         send_user_id = payload.get("user_id")
@@ -472,9 +937,19 @@ class XianyuLive:
             logger.info(f"卖家人工回复 (会话: {chat_id}, 商品: {item_id}): {send_message}")
             return []
 
+        if not self.is_auto_reply_item_allowed(item_id):
+            logger.info(f"商品 {item_id} 不在自动回复白名单中，跳过自动回复")
+            return []
+
         logger.info(
             f"用户: {send_user_name} (ID: {send_user_id}), 商品: {item_id}, 会话: {chat_id}, 消息: {send_message}"
         )
+
+        message_id = self._extract_message_id(raw_message)
+        if websocket is not None and message_id:
+            self._track_background_task(
+                asyncio.create_task(self.mark_message_read_and_view(websocket, chat_id, message_id))
+            )
 
         if self.is_manual_mode(chat_id):
             logger.info(f"🔴 会话 {chat_id} 处于人工接管模式，跳过自动回复")
@@ -491,7 +966,7 @@ class XianyuLive:
         item_info = self.context_manager.get_item_info(item_id)
         if not item_info:
             logger.info(f"从API获取商品信息: {item_id}")
-            api_result = self.xianyu.get_item_info(item_id)
+            api_result = await asyncio.to_thread(self.xianyu.get_item_info, item_id)
             if "data" in api_result and "itemDO" in api_result["data"]:
                 item_info = api_result["data"]["itemDO"]
                 self.context_manager.save_item_info(item_id, item_info)
@@ -593,26 +1068,6 @@ class XianyuLive:
     async def handle_message(self, message_data, websocket):
         """处理所有类型的消息"""
         try:
-
-            try:
-                message = message_data
-                ack = {
-                    "code": 200,
-                    "headers": {
-                        "mid": message["headers"]["mid"] if "mid" in message["headers"] else generate_mid(),
-                        "sid": message["headers"]["sid"] if "sid" in message["headers"] else '',
-                    }
-                }
-                if 'app-key' in message["headers"]:
-                    ack["headers"]["app-key"] = message["headers"]["app-key"]
-                if 'ua' in message["headers"]:
-                    ack["headers"]["ua"] = message["headers"]["ua"]
-                if 'dt' in message["headers"]:
-                    ack["headers"]["dt"] = message["headers"]["dt"]
-                await websocket.send(json.dumps(ack))
-            except Exception as e:
-                pass
-
             # 如果不是同步包消息，直接返回
             if not self.is_sync_package(message_data):
                 return
@@ -766,9 +1221,14 @@ class XianyuLive:
                                     if key in message_data["headers"]:
                                         ack["headers"][key] = message_data["headers"][key]
                                 await websocket.send(json.dumps(ack))
+
+                            if self._resolve_pending_ws_request(message_data):
+                                continue
                             
                             # 处理其他消息
-                            await self.handle_message(message_data, websocket)
+                            self._track_background_task(
+                                asyncio.create_task(self.handle_message(message_data, websocket))
+                            )
                                 
                         except json.JSONDecodeError:
                             logger.error("消息解析失败")
@@ -809,7 +1269,13 @@ class XianyuLive:
                     except asyncio.CancelledError:
                         pass
                     self.async_task_poll_task = None
-                
+
+                if self.background_tasks:
+                    for task in list(self.background_tasks):
+                        task.cancel()
+                    await asyncio.gather(*list(self.background_tasks), return_exceptions=True)
+                    self.background_tasks.clear()
+
                 # 如果是主动重启，立即重连；否则等待5秒
                 delay = self.get_reconnect_delay_seconds()
                 if delay == 0:

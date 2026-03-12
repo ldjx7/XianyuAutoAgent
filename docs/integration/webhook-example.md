@@ -95,6 +95,43 @@ def on_event():
 
 该示例只基于事件契约做决策，不依赖特定业务流程。
 
+## 使用 AI 渲染业务结果（可选）
+
+如果你希望订单系统只返回结构化结果，由 Agent 结合当前聊天上下文和商品信息生成更自然的话术，可以返回 `render_message`：
+
+```json
+{
+  "actions": [
+    {
+      "action_type": "render_message",
+      "payload": {
+        "chat_id": "chat123",
+        "to_user_id": "user123",
+        "scene": "workflow_result",
+        "facts": {
+          "status": "passed",
+          "message": "答题已完成，成绩 96 分。",
+          "result": {
+            "score": 96,
+            "exam_name": "B站课程测试"
+          }
+        },
+        "instructions": {
+          "tone": "自然、简洁、像闲鱼卖家",
+          "must_include": ["考试已完成", "96 分"]
+        },
+        "fallback_text": "答题已完成，成绩 96 分。"
+      }
+    }
+  ]
+}
+```
+
+建议边界：
+- 业务系统负责给出真实业务事实。
+- Agent 负责把这些事实渲染成适合闲鱼对话场景的话术。
+- 如果你不希望 AI 改写话术，就继续返回 `send_text`。
+
 ## 轮询状态接口（示例）
 
 `track_async_task.payload.status_url` 指向的接口建议返回：
@@ -105,6 +142,29 @@ def on_event():
   "message": "已完成考试，成绩 96 分。"
 }
 ```
+
+如果你希望轮询结果自动走 AI 渲染，可以返回：
+
+```json
+{
+  "status": "passed",
+  "message": "答题已完成，成绩 96 分。",
+  "result": {
+    "score": 96,
+    "exam_name": "B站课程测试"
+  },
+  "presentation": {
+    "mode": "ai",
+    "scene": "workflow_result",
+    "instructions": {
+      "tone": "自然、简洁、像闲鱼卖家"
+    },
+    "fallback_text": "答题已完成，成绩 96 分。"
+  }
+}
+```
+
+在这种情况下，Agent 会自动把轮询结果桥接为 `render_message` 动作。
 
 也可以直接返回动作列表：
 

@@ -146,6 +146,15 @@ ASYNC_TASK_POLL_INTERVAL_SECONDS=5
 ASYNC_TASK_POLL_TIMEOUT_MS=3000
 ASYNC_TASK_POLL_BATCH_SIZE=20
 
+# 自动回复商品白名单（可选）
+AUTO_REPLY_ITEM_WHITELIST_ENABLED=false
+AUTO_REPLY_ITEM_WHITELIST=
+AUTO_REPLY_ITEM_WHITELIST_FILE=data/item_whitelist.json
+AUTO_REPLY_ITEM_WHITELIST_API_ENABLED=false
+AUTO_REPLY_ITEM_WHITELIST_API_HOST=127.0.0.1
+AUTO_REPLY_ITEM_WHITELIST_API_PORT=8765
+AUTO_REPLY_ITEM_WHITELIST_API_TOKEN=
+
 # Cookie / token 风控策略
 ALLOW_INTERACTIVE_COOKIE_UPDATE=auto
 PROACTIVE_TOKEN_REFRESH_ENABLED=false
@@ -157,6 +166,10 @@ RISK_CONTROL_RETRY_INTERVAL=1800
 - `PROACTIVE_TOKEN_REFRESH_ENABLED=false` 时，不再默认每小时主动刷新 token，只在启动或重连时按需获取，能明显减少登录态相关请求频率。
 - `ALLOW_INTERACTIVE_COOKIE_UPDATE=auto` 会只在有真实终端时弹出 `input()` 让你粘贴新 Cookie；Docker 这类非交互环境会直接进入退避，不会再因为 `EOF when reading a line` 死循环。
 - `RISK_CONTROL_RETRY_INTERVAL` 控制命中 `RGV587_ERROR` 之后的退避秒数。
+- `AUTO_REPLY_ITEM_WHITELIST_ENABLED=true` 时，只有白名单里的 `item_id` 会触发自动回复，适合把买家侧会话完全挡掉。
+- `AUTO_REPLY_ITEM_WHITELIST` 支持直接在环境变量里写逗号分隔的商品 ID。
+- `AUTO_REPLY_ITEM_WHITELIST_FILE` 指向持久化 JSON 文件，管理接口的增删改会写回这里。
+- `AUTO_REPLY_ITEM_WHITELIST_API_*` 会启动一个仅本地监听、Bearer Token 保护的管理接口，供你动态维护白名单。
 
 ### 按商品路由到不同订单业务服务
 `ORDER_ITEM_WEBHOOK_ROUTES` 使用 JSON 配置，不需要改代码即可新增商品路由：
@@ -232,10 +245,13 @@ RISK_CONTROL_RETRY_INTERVAL=1800
 - 当轮询结果里的 `status` 变化时，若响应携带 `message` 或 `actions`，Agent 会只通知一次。
 - 终态建议使用：`passed`、`failed`、`timeout`。
 
+如果你希望订单系统返回结构化结果，让 Agent 再用 AI 把结果整理成更自然的话术，可以返回 `render_message` 动作，或在轮询接口里返回 `presentation.mode=ai`。这时业务系统负责提供事实，Agent 负责“怎么说”。
+
 ### 事件/动作契约文档
 - 事件 schema 与样例：`docs/events.md`
-- 动作 schema 与样例（包含 `send_text`）：`docs/actions.md`
+- 动作 schema 与样例（包含 `send_text` / `render_message`）：`docs/actions.md`
 - webhook 集成示例（含签名校验）：`docs/integration/webhook-example.md`
+- 外部异步业务系统对接规约：`docs/integration/xianyu-workflow-contract.md`
 
 ### 自定义提示词
 
@@ -245,6 +261,7 @@ RISK_CONTROL_RETRY_INTERVAL=1800
 - `price_prompt.txt`: 价格专家提示词
 - `tech_prompt.txt`: 技术专家提示词
 - `default_prompt.txt`: 默认回复提示词
+- `workflow_render_prompt.txt`: 工作流结果渲染提示词
 
 ## 🤝 参与贡献
 
