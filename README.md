@@ -232,10 +232,13 @@ RISK_CONTROL_RETRY_INTERVAL=1800
 - 当轮询结果里的 `status` 变化时，若响应携带 `message` 或 `actions`，Agent 会只通知一次。
 - 终态建议使用：`passed`、`failed`、`timeout`。
 
+如果你希望订单系统返回结构化结果，让 Agent 再用 AI 把结果整理成更自然的话术，可以返回 `render_message` 动作，或在轮询接口里返回 `presentation.mode=ai`。这时业务系统负责提供事实，Agent 负责“怎么说”。
+
 ### 事件/动作契约文档
 - 事件 schema 与样例：`docs/events.md`
-- 动作 schema 与样例（包含 `send_text`）：`docs/actions.md`
+- 动作 schema 与样例（包含 `send_text` / `render_message`）：`docs/actions.md`
 - webhook 集成示例（含签名校验）：`docs/integration/webhook-example.md`
+- 外部异步业务系统对接规约：`docs/integration/xianyu-workflow-contract.md`
 
 ### 自定义提示词
 
@@ -245,6 +248,7 @@ RISK_CONTROL_RETRY_INTERVAL=1800
 - `price_prompt.txt`: 价格专家提示词
 - `tech_prompt.txt`: 技术专家提示词
 - `default_prompt.txt`: 默认回复提示词
+- `workflow_render_prompt.txt`: 工作流结果渲染提示词
 
 ## 🤝 参与贡献
 
