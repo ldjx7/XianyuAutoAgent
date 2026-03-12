@@ -1,4 +1,5 @@
 import re
+import json
 from typing import List, Dict, Optional
 import os
 from openai import OpenAI
@@ -58,6 +59,7 @@ class XianyuReplyBot:
             'price': PriceAgent(self.client, self.price_prompt, self._safe_filter),
             'tech': TechAgent(self.client, self.tech_prompt, self._safe_filter),
             'default': DefaultAgent(self.client, self.default_prompt, self._safe_filter),
+            'workflow_render': WorkflowRenderAgent(self.client, self.workflow_render_prompt, self._safe_filter),
         }
 
     def _init_system_prompts(self):
@@ -88,6 +90,8 @@ class XianyuReplyBot:
             self.tech_prompt = load_prompt_content("tech_prompt")
             # 加载默认提示词
             self.default_prompt = load_prompt_content("default_prompt")
+            # 加载工作流结果渲染提示词
+            self.workflow_render_prompt = load_prompt_content("workflow_render_prompt")
                 
             logger.info("成功加载所有提示词")
         except Exception as e:
@@ -176,6 +180,24 @@ class XianyuReplyBot:
         self._init_system_prompts()
         self._init_agents()
         logger.info("提示词重新加载完成")
+
+    def render_workflow_message(
+        self,
+        scene: str,
+        facts: Dict,
+        instructions,
+        item_desc: str,
+        context: List[Dict],
+    ) -> str:
+        """根据结构化业务事实渲染用户可见文案"""
+        formatted_context = self.format_history(context)
+        return self.agents["workflow_render"].generate(
+            scene=scene,
+            facts=facts or {},
+            instructions=instructions,
+            item_desc=item_desc,
+            context=formatted_context,
+        )
 
 
 class IntentRouter:
@@ -332,3 +354,28 @@ class DefaultAgent(BaseAgent):
         """限制默认回复长度"""
         response = super()._call_llm(messages, temperature=0.7)
         return response
+
+
+class WorkflowRenderAgent(BaseAgent):
+    """工作流结果渲染Agent"""
+
+    def generate(self, scene: str, facts: Dict, instructions, item_desc: str, context: str) -> str:
+        facts_text = json.dumps(facts or {}, ensure_ascii=False, sort_keys=True)
+        instructions_text = json.dumps(instructions, ensure_ascii=False, sort_keys=True) if instructions is not None else "{}"
+        messages = [
+            {
+                "role": "system",
+                "content": f"【商品信息】{item_desc}\n【你与客户对话历史】{context}\n{self.system_prompt}",
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"【场景】{scene or 'workflow_result'}\n"
+                    f"【结构化事实】{facts_text}\n"
+                    f"【表达要求】{instructions_text}\n"
+                    "请基于以上事实生成一条直接发送给买家的中文回复。"
+                ),
+            },
+        ]
+        response = self._call_llm(messages, temperature=0.5)
+        return self.safety_filter(response)

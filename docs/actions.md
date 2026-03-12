@@ -96,3 +96,42 @@
 - 轮询接口返回 `status` 变化时，如果响应里带 `message` 或 `actions`，Agent 会通知一次并更新任务状态。
 
 未知 `action_type` 会被安全忽略并记录 warning。
+
+### 5. `render_message`
+由 Agent 使用当前聊天上下文和 AI 模型，将结构化业务事实渲染成最终发给买家的文本。
+
+```json
+{
+  "action_type": "render_message",
+  "payload": {
+    "chat_id": "chat123",
+    "to_user_id": "user123",
+    "scene": "workflow_result",
+    "facts": {
+      "status": "passed",
+      "message": "答题已完成，成绩 96 分。",
+      "result": {
+        "score": 96,
+        "exam_name": "B站课程测试"
+      }
+    },
+    "instructions": {
+      "tone": "自然、简洁、像闲鱼卖家",
+      "must_include": ["考试已完成", "96 分"]
+    },
+    "fallback_text": "答题已完成，成绩 96 分。"
+  },
+  "meta": {}
+}
+```
+
+约定：
+- `chat_id`、`to_user_id` 为必填。
+- `scene` 用于区分渲染场景，默认可用 `workflow_result`。
+- `facts` 应只包含业务系统确认过的结构化事实，Agent 不负责判断事实真假。
+- `instructions` 为可选表达要求，由 AI 用于控制语气和必须包含的内容。
+- `fallback_text` 为兜底文本；当 AI 超时、失败或未配置时，会直接发送该文本。
+
+建议：
+- 让业务系统给出“事实”，让 Agent 的 AI 决定“怎么说”。
+- 对分数、状态、是否通过等关键字段，务必放进 `facts`，不要只给自然语言摘要。

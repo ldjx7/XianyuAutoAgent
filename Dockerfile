@@ -55,6 +55,7 @@ COPY prompts/classify_prompt_example.txt prompts/classify_prompt.txt
 COPY prompts/price_prompt_example.txt prompts/price_prompt.txt
 COPY prompts/tech_prompt_example.txt prompts/tech_prompt.txt
 COPY prompts/default_prompt_example.txt prompts/default_prompt.txt
+COPY prompts/workflow_render_prompt_example.txt prompts/workflow_render_prompt.txt
 
 # 只复制运行时必要的代码
 COPY main.py XianyuAgent.py XianyuApis.py context_manager.py ./
