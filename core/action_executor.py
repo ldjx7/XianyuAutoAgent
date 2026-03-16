@@ -16,10 +16,12 @@ class ActionExecutor:
         send_msg_func: Optional[Callable[..., Any]],
         set_manual_mode_func: Optional[Callable[[str, bool], None]],
         send_image_func: Optional[Callable[..., Any]] = None,
+        render_message_func: Optional[Callable[..., Any]] = None,
         track_async_task_func: Optional[Callable[[Dict[str, Any]], bool]] = None,
     ):
         self.send_msg_func = send_msg_func
         self.send_image_func = send_image_func
+        self.render_message_func = render_message_func
         self.set_manual_mode_func = set_manual_mode_func
         self.track_async_task_func = track_async_task_func
 
@@ -34,6 +36,9 @@ class ActionExecutor:
             return
         if action.action_type == "send_image":
             await self._handle_send_image(action.payload, runtime)
+            return
+        if action.action_type == "render_message":
+            await self._handle_render_message(action.payload, runtime)
             return
         if action.action_type == "set_manual_mode":
             self._handle_set_manual_mode(action.payload)
@@ -89,6 +94,24 @@ class ActionExecutor:
             else:
                 fallback_text = "请打开二维码图片完成扫码登录"
         await self.send_msg_func(websocket, chat_id, to_user_id, f"{fallback_text}\n{image_url}")
+
+    async def _handle_render_message(self, payload: Dict[str, Any], runtime: Dict[str, Any]) -> None:
+        if self.render_message_func is None:
+            logger.warning("render_message_func is not configured, skip render_message")
+            return
+
+        websocket = runtime.get("websocket")
+        if websocket is None:
+            logger.warning("websocket is missing in runtime context, skip render_message")
+            return
+
+        chat_id = payload.get("chat_id")
+        to_user_id = payload.get("to_user_id")
+        if not all(isinstance(v, str) and v for v in [chat_id, to_user_id]):
+            logger.warning(f"invalid render_message payload={payload}")
+            return
+
+        await self.render_message_func(websocket, payload)
 
     def _handle_set_manual_mode(self, payload: Dict[str, Any]) -> None:
         if self.set_manual_mode_func is None:

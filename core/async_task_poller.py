@@ -163,6 +163,10 @@ class AsyncTaskPoller:
         if parsed:
             return parsed
 
+        render_action = self._build_render_message_action(data, task, status)
+        if render_action is not None:
+            return [render_action]
+
         message = _extract_message(data)
         if not message:
             return []
@@ -178,6 +182,46 @@ class AsyncTaskPoller:
                 meta={"task_id": task["task_id"], "status": status},
             )
         ]
+
+    def _build_render_message_action(
+        self,
+        data: Dict[str, Any],
+        task: Dict[str, Any],
+        status: str,
+    ) -> Optional[Action]:
+        presentation = data.get("presentation")
+        if not isinstance(presentation, dict):
+            return None
+
+        mode = str(presentation.get("mode") or "").strip().lower()
+        if mode not in {"ai", "hybrid"}:
+            return None
+
+        facts: Dict[str, Any] = {"status": status}
+        message = _extract_message(data)
+        if message:
+            facts["message"] = message
+
+        if "result" in data:
+            facts["result"] = data.get("result")
+
+        for key in ("score", "next_step", "exam_name", "task_status"):
+            if key in data:
+                facts[key] = data.get(key)
+
+        payload = {
+            "chat_id": task["chat_id"],
+            "to_user_id": task["to_user_id"],
+            "scene": presentation.get("scene") or "workflow_result",
+            "facts": facts,
+            "instructions": presentation.get("instructions"),
+            "fallback_text": presentation.get("fallback_text") or message or "",
+        }
+        return Action(
+            action_type="render_message",
+            payload=payload,
+            meta={"task_id": task["task_id"], "status": status},
+        )
 
 
 def _extract_message(data: Dict[str, Any]) -> Optional[str]:
