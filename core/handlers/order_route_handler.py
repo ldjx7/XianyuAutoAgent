@@ -97,6 +97,10 @@ class OrderRouteHandler(EventHandler):
 
         attempts = max(retries, 0) + 1
         timeout = max(timeout_ms, 1) / 1000.0
+        logger.info(
+            f"order route matched item_id={item_id} status={normalized_payload.get('order_status')} "
+            f"url={url.strip()} attempts={attempts}"
+        )
         for attempt in range(attempts):
             try:
                 response = requests.post(url.strip(), json=body, headers=headers, timeout=timeout)
@@ -107,7 +111,11 @@ class OrderRouteHandler(EventHandler):
                 continue
 
             if 200 <= response.status_code < 300:
-                return _parse_actions(response)
+                actions = _parse_actions(response)
+                logger.info(
+                    f"order route delivered item_id={item_id} status_code={response.status_code} actions={len(actions)}"
+                )
+                return actions
 
             logger.warning(
                 f"order route non-2xx item_id={item_id} attempt={attempt + 1}/{attempts} status={response.status_code}"
