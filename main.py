@@ -901,7 +901,6 @@ class XianyuLive:
         payload = event.payload if isinstance(event.payload, dict) else {}
         raw_message = payload.get("raw")
         raw_message = raw_message if isinstance(raw_message, dict) else {}
-        websocket = payload.get("websocket")
 
         chat_id = payload.get("chat_id")
         send_user_id = payload.get("user_id")
@@ -944,12 +943,6 @@ class XianyuLive:
         logger.info(
             f"用户: {send_user_name} (ID: {send_user_id}), 商品: {item_id}, 会话: {chat_id}, 消息: {send_message}"
         )
-
-        message_id = self._extract_message_id(raw_message)
-        if websocket is not None and message_id:
-            self._track_background_task(
-                asyncio.create_task(self.mark_message_read_and_view(websocket, chat_id, message_id))
-            )
 
         if self.is_manual_mode(chat_id):
             logger.info(f"🔴 会话 {chat_id} 处于人工接管模式，跳过自动回复")

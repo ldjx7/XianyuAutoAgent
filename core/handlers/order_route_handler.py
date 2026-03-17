@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import os
+from collections.abc import Mapping, Sequence
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
@@ -65,6 +66,11 @@ class OrderRouteHandler(EventHandler):
             logger.debug(f"order event without item_id skipped event_id={event.event_id}")
             return []
 
+        order_status = payload.get("order_status")
+        if not _should_route_order_status(order_status):
+            logger.info(f"order route skipped item_id={item_id} status={order_status}")
+            return []
+
         route = self.routes.get(item_id)
         if not route:
             logger.debug(f"order event item_id={item_id} has no route, skip")
@@ -75,14 +81,14 @@ class OrderRouteHandler(EventHandler):
             logger.warning(f"order route item_id={item_id} has invalid url")
             return []
 
-        normalized_payload = dict(payload)
+        normalized_payload = _sanitize_json_mapping(payload)
         normalized_payload["item_id"] = item_id
         body = {
             "event_id": event.event_id,
             "event_type": event.event_type,
             "occurred_at": event.occurred_at,
             "payload": normalized_payload,
-            "meta": event.meta,
+            "meta": _sanitize_json_mapping(event.meta),
         }
 
         headers = {"Content-Type": "application/json"}
@@ -122,6 +128,76 @@ class OrderRouteHandler(EventHandler):
             )
 
         return []
+
+
+def _should_route_order_status(order_status: Any) -> bool:
+    if not isinstance(order_status, str):
+        return False
+
+    normalized = order_status.strip()
+    if not normalized:
+        return False
+
+    blocked_keywords = (
+        "退款",
+        "待付款",
+        "未付款",
+        "关闭订单",
+        "交易关闭",
+        "关闭了订单",
+        "已关闭",
+        "取消",
+    )
+    if any(keyword in normalized for keyword in blocked_keywords):
+        return False
+
+    allowed_keywords = (
+        "已付款",
+        "等待卖家发货",
+        "等待你发货",
+        "待发货",
+        "买家已付款",
+    )
+    return any(keyword in normalized for keyword in allowed_keywords)
+
+
+_SKIP_JSON = object()
+
+
+def _sanitize_json_mapping(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+
+    sanitized: Dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "websocket":
+            continue
+        if not isinstance(key, str):
+            continue
+        normalized = _sanitize_json_value(item)
+        if normalized is _SKIP_JSON:
+            continue
+        sanitized[key] = normalized
+    return sanitized
+
+
+def _sanitize_json_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, Mapping):
+        return _sanitize_json_mapping(value)
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        normalized_items: List[Any] = []
+        for item in value:
+            normalized = _sanitize_json_value(item)
+            if normalized is _SKIP_JSON:
+                continue
+            normalized_items.append(normalized)
+        return normalized_items
+
+    return _SKIP_JSON
 
 
 def _load_item_routes_from_env() -> Dict[str, Dict[str, Any]]:
