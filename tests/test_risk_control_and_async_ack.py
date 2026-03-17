@@ -173,6 +173,38 @@ class RiskControlAndAsyncAckTest(unittest.TestCase):
         self.assertEqual(result, [])
         live._track_background_task.assert_not_called()
 
+    def test_send_image_uses_goofish_conversation_id_for_upload(self):
+        live = XianyuLive("unb=123; _m_h5_tk=token_123_456")
+        calls = []
+        png_bytes = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 8) + (1).to_bytes(4, "big") + (1).to_bytes(4, "big")
+
+        async def fake_fetch_image_bytes(image_url):
+            return png_bytes, "image/png"
+
+        async def fake_send_ws_request(ws, lwp, body=None, headers=None, timeout=None):
+            calls.append({"lwp": lwp, "body": body})
+            if lwp == "/r/FileUpload/pre":
+                return {"code": 200, "body": {"uploadInfo": "upload-1", "mediaId": "media-1", "fragLen": 102400}}
+            if lwp == "/r/FileUpload/ci":
+                return {"code": 200, "body": {"authMediaId": "auth-media-1"}}
+            if lwp == "/r/MessageSend/sendByReceiverScope":
+                return {"code": 200}
+            raise AssertionError(f"unexpected lwp: {lwp}")
+
+        live._fetch_image_bytes = fake_fetch_image_bytes
+        live._send_ws_request = fake_send_ws_request
+
+        __import__("asyncio").run(
+            live.send_image("ws", "chat-1", "buyer-1", "http://order-service/qr.png", text=None)
+        )
+
+        self.assertEqual(calls[0]["lwp"], "/r/FileUpload/pre")
+        self.assertEqual(calls[0]["body"][0]["conversationId"], "chat-1@goofish")
+        self.assertEqual(calls[1]["lwp"], "/r/FileUpload/ci")
+        self.assertEqual(calls[1]["body"][0]["conversationId"], "chat-1@goofish")
+        self.assertEqual(calls[2]["lwp"], "/r/MessageSend/sendByReceiverScope")
+        self.assertEqual(calls[2]["body"][0]["cid"], "chat-1@goofish")
+
 
 if __name__ == "__main__":
     unittest.main()

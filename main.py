@@ -197,6 +197,7 @@ class XianyuLive:
                 await asyncio.sleep(60)
 
     async def send_msg(self, ws, cid, toid, text):
+        conversation_id = self._to_conversation_id(cid)
         text = {
             "contentType": 1,
             "text": {
@@ -212,7 +213,7 @@ class XianyuLive:
             "body": [
                 {
                     "uuid": generate_uuid(),
-                    "cid": f"{cid}@goofish",
+                    "cid": conversation_id,
                     "conversationType": 1,
                     "content": {
                         "contentType": 101,
@@ -241,6 +242,13 @@ class XianyuLive:
             ]
         }
         await ws.send(json.dumps(msg))
+
+    def _to_conversation_id(self, cid):
+        if not isinstance(cid, str) or not cid:
+            return cid
+        if "@" in cid:
+            return cid
+        return f"{cid}@goofish"
 
     def _normalize_request_mid(self, mid):
         if not isinstance(mid, str):
@@ -449,11 +457,12 @@ class XianyuLive:
         if not all(isinstance(v, str) and v for v in [cid, toid, image_url]):
             raise ValueError("invalid send_image arguments")
 
+        conversation_id = self._to_conversation_id(cid)
         image_bytes, content_type = await self._fetch_image_bytes(image_url)
         file_info = self._build_image_file_info(image_url, content_type, image_bytes)
         upload_uuid = generate_uuid()
         pre_payload = {
-            "conversationId": cid,
+            "conversationId": conversation_id,
             "type": file_info["type"],
             "fileLen": file_info["size"],
             "isInternal": False,
@@ -500,7 +509,7 @@ class XianyuLive:
             ws,
             "/r/FileUpload/ci",
             body=[{
-                "conversationId": cid,
+                "conversationId": conversation_id,
                 "uploadId": upload_info,
                 "mediaId": media_id,
                 "partNumber": last_part_number,
@@ -517,7 +526,7 @@ class XianyuLive:
 
         message_body = {
             "uuid": upload_uuid,
-            "cid": f"{cid}@goofish",
+            "cid": conversation_id,
             "conversationType": 1,
             "content": {
                 "photo": {
