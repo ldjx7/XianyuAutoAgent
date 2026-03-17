@@ -4,7 +4,7 @@ import tempfile
 import time
 import unittest
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 openai_stub = ModuleType("openai")
@@ -143,6 +143,35 @@ class RiskControlAndAsyncAckTest(unittest.TestCase):
         self.assertEqual(len(recorder.actions), 1)
         self.assertEqual(recorder.actions[0].action_type, "set_manual_mode")
         self.assertEqual(recorder.context, {"websocket": "ws"})
+
+    def test_chat_event_does_not_schedule_mark_read_background_task(self):
+        live = XianyuLive("unb=123; _m_h5_tk=token_123_456")
+        live.myid = "seller-1"
+        live._track_background_task = Mock()
+        live.is_auto_reply_item_allowed = lambda item_id: True
+        live.is_manual_mode = lambda chat_id: False
+        live.is_bracket_system_message = lambda message: True
+
+        event = Event(
+            event_id="evt-no-mark-read",
+            event_type="chat.message.received",
+            occurred_at=1773223253000,
+            payload={
+                "chat_id": "chat-1",
+                "user_id": "buyer-1",
+                "sender_name": "buyer",
+                "message": "[我已付款，等待你发货]",
+                "item_id": "item-1",
+                "created_at": int(time.time() * 1000),
+                "raw": {"1": {"3": "message-1"}},
+                "websocket": "ws",
+            },
+        )
+
+        result = __import__("asyncio").run(live.handle_chat_event(event))
+
+        self.assertEqual(result, [])
+        live._track_background_task.assert_not_called()
 
 
 if __name__ == "__main__":
